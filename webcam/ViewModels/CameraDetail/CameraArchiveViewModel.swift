@@ -11,6 +11,14 @@ final class CameraArchiveViewModel: ObservableObject {
     @Published private(set) var maxBackSeconds: Double = 0
     @Published private(set) var archiveEvents: [ArchiveEvent] = []
     @Published private(set) var eventsRevision: Int = 0
+    
+    @Published private(set) var isCameraActive: Bool = true
+    @Published private(set) var isCameraOnline: Bool = true
+    @Published private(set) var isPTZ: Bool = false
+    @Published private(set) var isRecordingEnabled: Bool = false
+    @Published private(set) var hasArchive: Bool = false
+    @Published private(set) var archiveMessage: String?
+    @Published private(set) var cameraName: String?
 
     @Published var errorMessage: String?
 
@@ -19,13 +27,52 @@ final class CameraArchiveViewModel: ObservableObject {
     private let iso = ISO8601DateFormatter()
 
     private let log = OSLog(subsystem: "com.webcam.camera", category: "archive")
+    
+    var shouldShowPTZControls: Bool {
+        isCameraActive && isCameraOnline && isPTZ
+    }
 
+    var shouldShowArchiveControls: Bool {
+        isRecordingEnabled && hasArchive && maxBackSeconds > 0
+    }
+
+    var shouldShowLiveOnly: Bool {
+        !shouldShowArchiveControls
+    }
+
+    var playerStatusText: String? {
+        if !isCameraActive {
+            return "Камера не активна"
+        }
+        if !isCameraOnline {
+            return "Камера офлайн"
+        }
+        return nil
+    }
+
+    var archiveStatusText: String? {
+        if !isRecordingEnabled {
+            return "Архив недоступен: запись не ведётся"
+        }
+        if !hasArchive {
+            return archiveMessage ?? "Архив недоступен"
+        }
+        return nil
+    }
+    
     func setCamera(id: Int) {
         self.cameraID = id
     }
 
     func loadAll() async {
         await loadArchiveRange()
+
+        guard isRecordingEnabled, hasArchive else {
+            archiveEvents = []
+            eventsRevision &+= 1
+            return
+        }
+
         await loadArchiveEvents(limit: 120)
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -46,17 +93,54 @@ final class CameraArchiveViewModel: ObservableObject {
             )
 
             serverTime = resp.serverTime
-            availableFromTs = resp.availableFromTs
-            maxBackSeconds = max(0, Double(resp.serverTime - resp.availableFromTs))
-            availableFrom = iso.date(from: resp.availableFrom)
+            isRecordingEnabled = resp.recordingEnabled
+            hasArchive = resp.hasArchive
+            archiveMessage = resp.message
+            cameraName = resp.camera?.name
 
-            os_log("✅ archive-range cam=%d server=%d fromTs=%d maxBack=%.0f",
-                   log: log, type: .info,
-                   cameraID, resp.serverTime, resp.availableFromTs, maxBackSeconds)
+            isCameraActive = resp.camera?.isActive ?? true
+            isPTZ = resp.camera?.ptz ?? false
+
+            if let range = resp.range {
+                availableFromTs = range.fromTs
+                maxBackSeconds = max(0, Double(range.toTs - range.fromTs))
+
+                if let from = range.from {
+                    availableFrom = iso.date(from: from)
+                } else {
+                    availableFrom = Date(timeIntervalSince1970: TimeInterval(range.fromTs))
+                }
+
+                serverTime = max(resp.serverTime, range.toTs)
+
+                os_log("✅ archive-range cam=%d server=%d fromTs=%d toTs=%d maxBack=%.0f rec=%{public}s hasArchive=%{public}s active=%{public}s ptz=%{public}s",
+                       log: log, type: .info,
+                       cameraID,
+                       resp.serverTime,
+                       range.fromTs,
+                       range.toTs,
+                       maxBackSeconds,
+                       String(resp.recordingEnabled),
+                       String(resp.hasArchive),
+                       String(isCameraActive),
+                       String(isPTZ))
+            } else {
+                availableFromTs = nil
+                availableFrom = nil
+                maxBackSeconds = 0
+
+                os_log("✅ archive-range cam=%d no range rec=%{public}s hasArchive=%{public}s message=%{public}s",
+                       log: log, type: .info,
+                       cameraID,
+                       String(resp.recordingEnabled),
+                       String(resp.hasArchive),
+                       resp.message ?? "-")
+            }
 
         } catch {
             os_log("❌ archive-range cam=%d err=%{public}s", log: log, type: .error, cameraID, String(reflecting: error))
-            maxBackSeconds = max(maxBackSeconds, 600)
+            maxBackSeconds = 0
+            archiveMessage = "Не удалось загрузить архив"
         }
     }
 
@@ -99,5 +183,10 @@ final class CameraArchiveViewModel: ObservableObject {
     private func loadArchiveEventsFullIfNeeded() async {
         if archiveEvents.count >= 250 { return }
         await loadArchiveEvents(limit: 300, types: [])
+    }
+    
+    func clearArchiveEvents() {
+        archiveEvents = []
+        eventsRevision &+= 1
     }
 }

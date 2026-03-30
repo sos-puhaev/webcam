@@ -4,7 +4,7 @@ final class APIService {
     static let shared = APIService()
     private init() {}
 
-    private let baseURL = "http://192.168.1.51:8081/api"
+    private let baseURL = "http://192.168.77.136:8081/api"
 
     private var token: String? {
         KeychainService.shared.get(Constants.StorageKeys.accessToken)

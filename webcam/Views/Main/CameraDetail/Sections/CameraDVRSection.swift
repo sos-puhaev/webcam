@@ -17,17 +17,28 @@ struct CameraDVRSection: View {
     let labelForValue: (Double) -> String
     let compactLabelForValue: (Double) -> String
 
-    /// true = в fullscreen/компактном режиме (убираем ±10 и play/pause)
     let compactControls: Bool
-
-    /// Высота scrubber (обычно 110 в обычном, 76–90 в fullscreen)
     let scrubberHeight: CGFloat
 
     private var modeLabel: String { streamVM.mode == "live" ? "LIVE" : "ARCHIVE" }
 
     private let speeds: [Double] = [16, 8, 1]
 
+    private var hasArchiveControls: Bool {
+        archiveVM.shouldShowArchiveControls
+    }
+
     var body: some View {
+        Group {
+            if hasArchiveControls {
+                archiveContent
+            } else {
+                liveOnlyContent
+            }
+        }
+    }
+
+    private var archiveContent: some View {
         VStack(spacing: 8) {
             if !compactControls {
                 HStack(spacing: 12) {
@@ -71,7 +82,6 @@ struct CameraDVRSection: View {
                 }
 
             } else {
-                // Fullscreen — только скорость справа
                 HStack(spacing: 12) {
                     Spacer()
 
@@ -118,17 +128,92 @@ struct CameraDVRSection: View {
         .padding(.top, 2)
     }
 
-    // MARK: - Speed menu
+    private var liveOnlyContent: some View {
+        VStack(spacing: 10) {
+            if !compactControls {
+                HStack {
+                    Text("LIVE")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.green)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.green.opacity(0.12))
+                        .clipShape(Capsule())
+
+                    Spacer()
+
+                    Button {
+                        ui.isPlaying.toggle()
+                    } label: {
+                        Image(systemName: ui.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3)
+                    }
+                }
+                .padding(.horizontal)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.xmark")
+                        .foregroundColor(.orange)
+
+                    Text(archiveVM.archiveStatusText ?? "Архив недоступен")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+                }
+                .padding(.horizontal)
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.xmark")
+                        .foregroundColor(.orange)
+
+                    Text(archiveVM.archiveStatusText ?? "Архив недоступен")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.85))
+
+                    Spacer()
+                }
+                .padding(.horizontal)
+            }
+
+            liveTimelinePlaceholder(showLiveText: !compactControls)
+                .frame(height: scrubberHeight)
+                .padding(.horizontal)
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private func liveTimelinePlaceholder(showLiveText: Bool) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.secondary.opacity(0.08))
+
+            HStack {
+                if showLiveText {
+                    Text("LIVE")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(.green)
+                }
+
+                Spacer()
+
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .foregroundColor(.green)
+            }
+            .padding(.horizontal, 14)
+        }
+    }
 
     private func speedMenu(isCompact: Bool) -> some View {
         Menu {
             Button("1× (обычно)") {
-                applyArchiveSpeed(nil)       // ✅ сразу переоткроет архив
+                applyArchiveSpeed(nil)
             }
 
             ForEach(speeds.filter { $0 != 1 }, id: \.self) { s in
                 Button(speedTitle(s)) {
-                    applyArchiveSpeed(s)     // ✅ сразу переоткроет архив
+                    applyArchiveSpeed(s)
                 }
             }
         } label: {
@@ -145,8 +230,9 @@ struct CameraDVRSection: View {
         }
     }
 
-    /// ✅ Меняем скорость и сразу переоткрываем текущий архив без скраба
     private func applyArchiveSpeed(_ speed: Double?) {
+        guard archiveVM.shouldShowArchiveControls else { return }
+
         ui.archiveSpeed = speed
 
         guard streamVM.mode == "archive" else { return }
@@ -166,20 +252,14 @@ struct CameraDVRSection: View {
         }
 
         ui.lastRequestedFromTs = fromTs
-
-        // ✅ база для follow
         ui.archiveBaseFromTs = fromTs
         ui.archiveBaseSpeed = speed ?? 1
-
-        // ✅ базовая точка player-time (после переоткрытия будет 0, но на всякий)
         ui.archiveBasePlayerSeconds = 0
 
         Task { @MainActor in
             await streamVM.openArchive(fromTs: fromTs, speed: speed)
         }
     }
-
-    // MARK: - Clamp
 
     private func clampValues() {
         let maxV = max(1, sliderMax)

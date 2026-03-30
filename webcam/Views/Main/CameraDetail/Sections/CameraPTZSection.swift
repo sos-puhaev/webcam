@@ -6,7 +6,8 @@ struct CameraPTZSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Управление камерой").font(.headline)
+                Text("Управление камерой")
+                    .font(.headline)
                 Spacer()
             }
 
@@ -16,7 +17,7 @@ struct CameraPTZSection: View {
                     canDown: vm.canDown,
                     canLeft: vm.canLeft,
                     canRight: vm.canRight,
-                    degreesPerTick: vm.estimatedDegrees(),   // ← “сколько градусов за импульс”
+                    degreesPerTick: vm.estimatedDegrees(),
                     onStart: { action in vm.startMove(action) },
                     onStop: { action in vm.stopMove(for: action) }
                 )
@@ -48,10 +49,14 @@ struct CameraPTZSection: View {
         }
         .padding()
         .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(0.14))
+        )
+        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
         .padding(.horizontal)
         .onDisappear {
-            // чтобы камера не "ехала" если ушли со страницы удерживая кнопку
             vm.stopActiveIfNeeded()
         }
     }

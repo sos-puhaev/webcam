@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import AudioToolbox
 
 struct CameraDetailView: View {
     let camera: Camera
@@ -23,6 +24,7 @@ struct CameraDetailView: View {
     @StateObject private var deviceOrientation = DeviceOrientationObserver()
 
     @State private var archiveFollowTask: Task<Void, Never>?
+    @State private var isPTZExpanded = false
 
     // Tuning
     private let debounceNanoseconds: UInt64 = 450_000_000
@@ -32,6 +34,12 @@ struct CameraDetailView: View {
 
     private var sliderMax: Double { max(1, archiveVM.maxBackSeconds) }
     private var backSeconds: Double { sliderMax - ui.positionSeconds }
+
+    private func playPTZToggleSound(expanded: Bool) {
+        let openSound: SystemSoundID = 1157
+        let closeSound: SystemSoundID = 1519
+        AudioServicesPlaySystemSound(expanded ? openSound : closeSound)
+    }
 
     var body: some View {
         content
@@ -48,11 +56,9 @@ struct CameraDetailView: View {
 
                 let maxV = max(1, sliderMax)
 
-                // clamp (важно всегда)
                 ui.previewPositionSeconds = min(max(ui.previewPositionSeconds, 0), maxV)
                 ui.positionSeconds = min(max(ui.positionSeconds, 0), maxV)
 
-                // ✅ если мы реально в live и не скраббим — держим иглу справа
                 if streamVM.mode == "live" && !ui.isScrubbing {
                     ui.previewPositionSeconds = maxV
                     ui.positionSeconds = maxV
@@ -66,7 +72,9 @@ struct CameraDetailView: View {
                 }
             }
 
-            .onChange(of: archiveVM.serverTime) { _ in rebuildMarkersNow() }
+            .onChange(of: archiveVM.serverTime) { _ in
+                rebuildMarkersNow()
+            }
 
             .onChange(of: detailPlayer.showError, perform: handlePlayerShowError)
             .onChange(of: ui.showVideoError, perform: handleVideoErrorSheet)
@@ -80,18 +88,25 @@ struct CameraDetailView: View {
             .onChange(of: ui.isPlaying) { _ in startArchiveTimelineFollow() }
             .onChange(of: ui.isScrubbing) { _ in startArchiveTimelineFollow() }
 
-            // ✅ Авто-fullscreen при повороте в landscape
+            .onChange(of: archiveVM.shouldShowPTZControls) { canShow in
+                if !canShow, isPTZExpanded {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                        isPTZExpanded = false
+                    }
+                }
+            }
+
             .onChange(of: deviceOrientation.isLandscape) { isLand in
                 if isLand && showFullscreen == false {
                     openFullscreen(auto: true)
                 }
-                // Если хочешь авто-закрытие при возврате в портрет — раскомментируй:
-                if !isLand && showFullscreen == true { closeFullscreen() }
+                if !isLand && showFullscreen == true {
+                    closeFullscreen()
+                }
             }
 
             .sheet(isPresented: $showEdit) { editSheet }
 
-            // ✅ Fullscreen: ОБЯЗАТЕЛЬНО передаём scrubberHeight
             .fullScreenCover(isPresented: $showFullscreen) {
                 CameraFullscreenView(
                     streamVM: streamVM,
@@ -108,27 +123,31 @@ struct CameraDetailView: View {
                     onScrubEnded: onScrubEnded,
                     onGoLive: goLive,
                     onDismiss: { closeFullscreen() },
-                    scrubberHeight: 78   // ✅ под fullscreen
+                    scrubberHeight: 78
                 )
             }
     }
 
-    // MARK: - Toolbar
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarTrailing) {
-            Button { showEdit = true } label: { Image(systemName: "pencil") }
+            Button { showEdit = true } label: {
+                Image(systemName: "gearshape")
+            }
         }
     }
 
-    // MARK: - Setup
+    var liveOnlySection: some View {
+        CameraLiveOnlySection(
+            message: archiveVM.archiveStatusText ?? "Архив недоступен"
+        )
+    }
+
     private func onAppearSetup() {
         lastAppliedStreamKey = nil
 
         streamVM.setCamera(id: camera.id)
         archiveVM.setCamera(id: camera.id)
-
-        // ✅ PTZ
         ptzVM.setCamera(id: camera.id)
 
         let maxV = max(1, sliderMax)
@@ -147,16 +166,18 @@ struct CameraDetailView: View {
             await streamVM.openLive(force: true)
             await archiveVM.loadAll()
             rebuildMarkersNow()
-            await ptzVM.loadCapabilities()
+
+            if archiveVM.isPTZ {
+                await ptzVM.loadCapabilities()
+            }
         }
     }
 
     private func onDisappearCleanup() {
         ui.isPlaying = false
         lastAppliedStreamKey = nil
+        isPTZExpanded = false
 
-        // ✅ на всякий случай: если уходят со страницы в момент удержания кнопки
-        // (можно убрать, если не хочешь лишний запрос)
         ptzVM.stopMove(for: "up")
         ptzVM.stopMove(for: "down")
         ptzVM.stopMove(for: "left")
@@ -185,21 +206,27 @@ struct CameraDetailView: View {
                 detailPlayer.hasFirstFrame == false ||
                 detailPlayer.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
 
-            if stillBad { await streamVM.openLive(force: true) }
+            if stillBad {
+                await streamVM.openLive(force: true)
+            }
 
             Task { @MainActor in
                 await archiveVM.loadArchiveRange()
-                await archiveVM.loadArchiveEvents(limit: 120)
+
+                if archiveVM.shouldShowArchiveControls {
+                    await archiveVM.loadArchiveEvents(limit: 120)
+                } else {
+                    archiveVM.clearArchiveEvents()
+                }
             }
 
-            // ✅ если камера поддерживает PTZ — обновим capabilities после возврата в app
             Task { @MainActor in
-                await ptzVM.loadCapabilities()
+                if archiveVM.isPTZ {
+                    await ptzVM.loadCapabilities()
+                }
             }
         }
     }
-
-    // MARK: - Timeline labels
 
     private func labelForTimelineValueCompact(_ v: Double) -> String {
         if abs(v - sliderMax) < 0.5 { return "LIVE" }
@@ -258,8 +285,8 @@ struct CameraDetailView: View {
         return 600
     }
 
-    // MARK: - Fullscreen (orientation)
     private func openFullscreen(auto: Bool = false) {
+        guard archiveVM.playerStatusText == nil else { return }
         guard showFullscreen == false else { return }
         guard showEdit == false else { return }
 
@@ -285,15 +312,12 @@ struct CameraDetailView: View {
         guard playerSec.isFinite else { return }
 
         let speed = ui.archiveSpeed ?? ui.archiveBaseSpeed
-
-        // Текущее положение на шкале → backSeconds → timestamp
         let maxV = max(1, sliderMax)
         let back = maxV - ui.positionSeconds
 
         let st = Double(stInt)
         let currentTs = st - back
 
-        // ✅ обновляем базу так, чтобы follow снова считал дельту от "сейчас"
         ui.archiveBaseFromTs = Int(currentTs.rounded(.down))
         ui.archiveBasePlayerSeconds = playerSec
         ui.archiveBaseSpeed = speed
@@ -301,19 +325,27 @@ struct CameraDetailView: View {
 }
 
 private extension CameraDetailView {
-    // MARK: - Content
-
     var content: some View {
         ScrollView {
             VStack(spacing: 16) {
                 playerSection
 
-                // ✅ PTZ UI: показываем только если есть управление
-                if ptzVM.isAvailable {
+                if archiveVM.shouldShowPTZControls && ptzVM.isAvailable && isPTZExpanded {
                     CameraPTZSection(vm: ptzVM)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .move(edge: .top).combined(with: .opacity)
+                            )
+                        )
                 }
 
-                dvrSection
+                if archiveVM.shouldShowArchiveControls {
+                    dvrSection
+                } else {
+                    liveOnlySection
+                }
+
                 infoSection
                 Spacer(minLength: 24)
             }
@@ -322,18 +354,35 @@ private extension CameraDetailView {
     }
 
     var playerSection: some View {
-        CameraPlayerSection(
-            streamVM: streamVM,
-            playerStore: detailPlayer,
-            ui: ui,
-            backSeconds: backSeconds,
-            goLiveThreshold: goLiveThreshold,
-            onGoLive: goLive,
-            onFullscreen: { openFullscreen() }
-        )
+        VStack(spacing: 0) {
+            CameraPlayerSection(
+                streamVM: streamVM,
+                playerStore: detailPlayer,
+                ui: ui,
+                archiveVM: archiveVM,
+                backSeconds: backSeconds,
+                goLiveThreshold: goLiveThreshold,
+                onGoLive: goLive,
+                onFullscreen: { openFullscreen() }
+            )
+
+            if archiveVM.shouldShowPTZControls && ptzVM.isAvailable {
+                PTZDrawerHandle(
+                    isExpanded: isPTZExpanded,
+                    action: {
+                        let newValue = !isPTZExpanded
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                            isPTZExpanded = newValue
+                        }
+                        playPTZToggleSound(expanded: newValue)
+                    }
+                )
+                .padding(.horizontal)
+                .padding(.top, -6)
+            }
+        }
     }
 
-    // ✅ Обычный DVR: ОБЯЗАТЕЛЬНО передаём compactControls + scrubberHeight
     var dvrSection: some View {
         CameraDVRSection(
             streamVM: streamVM,
@@ -367,13 +416,19 @@ private extension CameraDetailView {
         )
     }
 
-    // MARK: - Actions
-
     func goLive() {
-        CameraDetailLifecycle.goLive(ui: ui, sliderMax: sliderMax, streamVM: streamVM)
+        guard archiveVM.isCameraActive, archiveVM.isCameraOnline else { return }
+
+        CameraDetailLifecycle.goLive(
+            ui: ui,
+            sliderMax: sliderMax,
+            streamVM: streamVM
+        )
     }
 
     func onScrubEnded() {
+        guard archiveVM.shouldShowArchiveControls else { return }
+
         CameraDetailLifecycle.scheduleOpenForPreviewPosition(
             ui: ui,
             debounceNanoseconds: debounceNanoseconds
@@ -393,10 +448,12 @@ private extension CameraDetailView {
     }
 
     func rebuildMarkersNow() {
-        CameraDetailLifecycle.rebuildMarkers(ui: ui, archiveVM: archiveVM, sliderMax: sliderMax)
+        CameraDetailLifecycle.rebuildMarkers(
+            ui: ui,
+            archiveVM: archiveVM,
+            sliderMax: sliderMax
+        )
     }
-
-    // MARK: - Handlers
 
     func handleStreamKeyChange(_ key: String) {
         guard lastAppliedStreamKey != key else { return }
@@ -413,20 +470,16 @@ private extension CameraDetailView {
                 ui.archiveBasePlayerSeconds = 0
                 ui.archiveBaseSpeed = 1
             } else {
-                // ✅ ВАЖНО: база ts берётся из currentArchiveTs (он ставится в streamVM.openArchive)
                 if let ts = streamVM.currentArchiveTs {
                     ui.archiveBaseFromTs = ts
                 }
 
-                // ✅ запоминаем speed базы (для правильного пересчёта времени)
                 ui.archiveBaseSpeed = ui.archiveSpeed ?? 1
 
-                // currentTime сразу после replaceCurrentItem может быть 0 — это нормально
                 let ps = detailPlayer.player.currentTime().seconds
                 ui.archiveBasePlayerSeconds = ps.isFinite ? ps : 0
             }
 
-            // ✅ стартуем/перестартуем follow каждый раз, когда пришёл новый url
             startArchiveTimelineFollow()
         }
     }
@@ -457,8 +510,8 @@ private extension CameraDetailView {
     private func startArchiveTimelineFollow() {
         archiveFollowTask?.cancel()
 
-        // Едем только когда проигрываем архив и не скрабим
-        guard streamVM.mode == "archive",
+        guard archiveVM.shouldShowArchiveControls,
+              streamVM.mode == "archive",
               ui.isPlaying,
               ui.isScrubbing == false,
               let _ = ui.archiveBaseFromTs else { return }

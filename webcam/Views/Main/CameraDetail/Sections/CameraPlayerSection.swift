@@ -5,6 +5,7 @@ struct CameraPlayerSection: View {
     @ObservedObject var streamVM: CameraStreamViewModel
     @ObservedObject var playerStore: DetailPlayerStore
     @ObservedObject var ui: CameraDetailState
+    @ObservedObject var archiveVM: CameraArchiveViewModel
 
     let backSeconds: Double
     let goLiveThreshold: Double
@@ -12,7 +13,9 @@ struct CameraPlayerSection: View {
     let onFullscreen: () -> Void
 
     private var showGoLiveButton: Bool {
-        streamVM.mode == "archive" || backSeconds > goLiveThreshold
+        archiveVM.playerStatusText == nil &&
+        archiveVM.shouldShowArchiveControls &&
+        (streamVM.mode == "archive" || backSeconds > goLiveThreshold)
     }
 
     var body: some View {
@@ -31,18 +34,46 @@ struct CameraPlayerSection: View {
                     .frame(height: 240)
                     .cornerRadius(12)
                     .shadow(radius: 2)
+                    
+                    if let status = archiveVM.playerStatusText {
+                        ZStack {
+                            Color.black.opacity(0.72)
 
-                    // Fullscreen
-                    Button(action: onFullscreen) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.title3.weight(.semibold))
-                            .padding(10)
-                            .background(.black.opacity(0.6))
-                            .foregroundColor(.white)
-                            .cornerRadius(10)
+                            VStack(spacing: 12) {
+                                Image(systemName: archiveVM.isCameraActive ? "wifi.slash" : "video.slash")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(.white)
+
+                                Text(status)
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+
+                                if let name = archiveVM.cameraName {
+                                    Text(name)
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.75))
+                                }
+                            }
+                            .multilineTextAlignment(.center)
+                            .padding()
+                        }
+                        .frame(height: 240)
+                        .cornerRadius(12)
                     }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    
+                    // Fullscreen
+                    if archiveVM.playerStatusText == nil {
+                        Button(action: onFullscreen) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.title3.weight(.semibold))
+                                .padding(10)
+                                .background(.black.opacity(0.6))
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
 
                     if !playerStore.hasFirstFrame && (playerStore.isLoading || streamVM.isLoading) {
                         ProgressView().scaleEffect(1.5)
@@ -64,18 +95,15 @@ struct CameraPlayerSection: View {
                         }
                     }
 
-                    if playerStore.showError || ui.showVideoError {
+                    if (playerStore.showError || ui.showVideoError), archiveVM.playerStatusText == nil {
                         VStack {
                             Spacer()
                             Button {
                                 Task { @MainActor in
-                                    // ✅ сразу прячем кнопку
                                     playerStore.clearError()
                                     ui.showVideoError = false
                                     ui.videoErrorMessage = ""
                                     ui.isLoading = true
-
-                                    // ✅ реконнект
                                     playerStore.reconnect(autoplay: ui.isPlaying)
                                 }
                                 streamVM.reconnectStream(force: true)
@@ -95,7 +123,7 @@ struct CameraPlayerSection: View {
                         }
                     }
 
-                    if !ui.isPlaying {
+                    if !ui.isPlaying && archiveVM.playerStatusText == nil {
                         ZStack {
                             Color.black.opacity(0.7)
                             Image(systemName: "play.circle.fill")

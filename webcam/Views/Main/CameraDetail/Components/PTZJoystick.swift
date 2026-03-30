@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct PTZJoystick: View {
     let canUp: Bool
@@ -81,6 +82,9 @@ struct PTZDirectionButton: View {
 
     @State private var pressed = false
     @State private var repeatTask: Task<Void, Never>?
+    @State private var impactLight = UIImpactFeedbackGenerator(style: .light)
+    @State private var impactSoft = UIImpactFeedbackGenerator(style: .soft)
+    @State private var selection = UISelectionFeedbackGenerator()
 
     /// Растущий счётчик градусов при удержании
     @State private var accumulatedDegrees: Int = 0
@@ -130,13 +134,20 @@ struct PTZDirectionButton: View {
             .onDisappear {
                 endPress()
             }
+            .onAppear {
+                impactLight.prepare()
+                impactSoft.prepare()
+                selection.prepare()
+            }
     }
 
     private func beginPress() {
         pressed = true
         accumulatedDegrees = 0
 
-        // старт сразу + первый "тик"
+        impactSoft.impactOccurred()
+        impactSoft.prepare()
+
         onStart(action)
         accumulatedDegrees += max(1, degreesPerTick)
 
@@ -147,9 +158,11 @@ struct PTZDirectionButton: View {
                 if Task.isCancelled { return }
                 if !pressed { return }
 
-                // каждый тик — продлеваем движение и наращиваем градусы
                 onStart(action)
                 accumulatedDegrees += max(1, degreesPerTick)
+
+                selection.selectionChanged()
+                selection.prepare()
             }
         }
     }
@@ -167,7 +180,9 @@ struct PTZDirectionButton: View {
 
         pressed = false
         onStop(action)
-
+        
+        impactLight.impactOccurred()
+        impactLight.prepare()
         // можно сбрасывать сразу или оставить последнее значение на долю секунды
         accumulatedDegrees = 0
     }

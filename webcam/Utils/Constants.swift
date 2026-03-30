@@ -1,6 +1,6 @@
 struct Constants {
 
-    static let baseURL = "http://192.168.1.51:8081/api"
+    static let baseURL = "http://192.168.77.136:8081/api"
     
     struct StorageKeys {
         static let accessToken = "accessToken"
